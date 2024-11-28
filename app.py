@@ -3,7 +3,7 @@ import cv2
 import face_recognition
 import numpy as np
 import pickle
-from models import session, Presence
+from models import session, Presence, get_today_presences
 import datetime
 import os
 
@@ -45,7 +45,7 @@ except FileNotFoundError:
 
 # Initialize video capture globally
 video_capture = None
-last_detection_time = {}  # Pour éviter les détections multiples
+
 
 def get_video_capture():
     global video_capture
@@ -73,14 +73,14 @@ def process_frame(frame):
             name = known_face_names[best_match_index]
             
             # Vérifier si assez de temps s'est écoulé depuis la dernière détection
-            if name not in last_detection_time or \
-               (current_time - last_detection_time[name]).total_seconds() > 86400:  # 24h entre chaque détection
+            last_presence = session.query(Presence).filter_by(name=name).order_by(Presence.timestamp.desc()).first()
+            if not last_presence or \
+               (current_time - last_presence.timestamp).total_seconds() > 86400:  # 24h entre chaque détection
                 # Save to database
                 new_entry = Presence(name=name, timestamp=current_time)
                 session.add(new_entry)
                 try:
                     session.commit()
-                    last_detection_time[name] = current_time
                     print(f"Presence recorded for {name}")
                 except Exception as e:
                     print(f"Error saving to database: {e}")
@@ -136,6 +136,42 @@ def stop():
         video_capture.release()
         video_capture = None
     return "Video stopped"
+
+@app.route('/today_presences')
+def today_presences():
+    presences = get_today_presences()
+    return render_template('presences.html', presences=presences)
+
+@app.route('/upload_image', methods=['GET', 'POST'])
+def upload_image():
+    # Directory to save images
+    upload_folder = "images"
+    if request.method == 'POST':
+        # Check if the POST request has the file part
+        if 'image' not in request.files:
+            return "No file part", 400
+        file = request.files['image']
+        if file.filename == '':
+            return "No selected file", 400
+        if file and file.filename.endswith((".jpg", ".jpeg", ".png")):
+            file_path = os.path.join(upload_folder, file.filename)
+            # Save the file to the images directory
+            file.save(file_path)
+            print(f"Image uploaded to {file_path}")
+            
+            # Remove the existing .pkl file
+            if os.path.exists('face_encodings.pkl'):
+                os.remove('face_encodings.pkl')
+                print("Existing .pkl file removed.")
+            
+            # Regenerate encodings
+            global known_face_encodings, known_face_names
+            known_face_encodings, known_face_names = generate_encodings()
+            return "Image uploaded and encodings regenerated successfully!"
+        else:
+            return "Invalid file type. Please upload a .jpg, .jpeg, or .png file.", 400
+    return render_template('upload_image.html')
+
 
 if __name__ == '__main__':
     app.run(debug=True)
